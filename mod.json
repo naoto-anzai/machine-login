@@ -1,0 +1,1 @@
+{ "place": "none", "title": "Machine login", "overlay": { "kind": "dialog", "width": 460, "height": 190, "modal": true } }
