@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "props": { "storybook": true },
+  "states": [
+    {
+      "key": "view", "label": "表示", "about": "ログイン促しダイアログ / 端末の上のタイトルバー",
+      "kind": "radio",
+      "options": [
+        { "value": "dialog", "label": "ダイアログ" },
+        { "value": "bar", "label": "タイトルバー" }
+      ],
+      "default": "dialog"
+    },
+    {
+      "key": "machine", "label": "マシン", "about": "needs_login のマシン名",
+      "kind": "radio",
+      "options": [
+        { "value": "one", "label": "1台 (my-server)" },
+        { "value": "long", "label": "長い名前" },
+        { "value": "none", "label": "なし(接続は正常)" },
+        { "value": "loading", "label": "確認中 (…)" }
+      ],
+      "default": "one"
+    },
+    { "key": "busy", "label": "起動中 (…)", "about": "ダイアログのみ: ログイン押下直後", "kind": "switch", "default": false },
+    { "key": "error", "label": "エラー表示", "about": "ダイアログのみ: 端末の起動失敗", "kind": "switch", "default": false }
+  ]
+}

@@ -1,14 +1,30 @@
 // Machine login. One mod, three roles (by props):
 //  - watcher (no props; put it in a layout, floating, it draws nothing): every 5 s asks `hc machine ls`;
 //    when a machine's state becomes "needs_login" it opens the dialog once (until the state changes).
-//  - dialog (props.overlay, no props.bar; also `mod.open machine-login`): "naoto-wsl needs a password",
+//  - dialog (props.overlay, no props.bar; also `mod.open machine-login`): "my-server needs a password",
 //    [Log in] starts `hc machine login <name>` in a terminal and shows it in a popup;
 //    the password is typed into that terminal (ssh reads it from its tty), never through this mod.
 //  - bar (props.bar): title bar above the terminal, ✕ closes and ends the terminal.
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { hc, run, openOverlay, closeOverlay, props, theme, notify } from "herdr";
+import { hc, run, openOverlay, closeOverlay, props, theme, notify, shared, setShared } from "herdr";
+
+// Mock (ModsStoryBook): selected values for a Story preview pane, else null (production).
+function storybook(mod) {
+  const id = props()?.storybook;
+  return id ? (shared(`storybook:${mod}:${id}`)?.values ?? {}) : null;
+}
+const MOCK = {
+  machine: {
+    one: "my-server",
+    long: "very-long-machine-name-for-research-cluster-gpu-node-01.example.ac.jp",
+    none: null,
+    loading: undefined,
+  },
+  error: "could not start the login terminal: ssh: connect to host my-server port 22: Connection timed out",
+};
+const DEFAULTS = { view: "dialog", machine: "one", busy: false, error: false };
 
 async function needLogin() {
   const r = await hc(["machine", "ls", "--json"]);
@@ -16,7 +32,22 @@ async function needLogin() {
   return (JSON.parse(r.stdout).machines ?? []).filter((m) => m.state === "needs_login" && !m.temporary).map((m) => m.name);
 }
 
+// Which machines already have a dialog / login terminal open (shared across copies and reloads).
+// Entries older than OPEN_TTL are ignored, so a crash can't block the prompt forever.
+const OPEN_KEY = "machine-login:open";
+const OPEN_TTL = 10 * 60 * 1000;
+function isOpen(machine) {
+  const t = (shared(OPEN_KEY) ?? {})[machine];
+  return typeof t === "number" && Date.now() - t < OPEN_TTL;
+}
+function markOpen(machine, on) {
+  const cur = { ...(shared(OPEN_KEY) ?? {}) };
+  if (on) cur[machine] = Date.now(); else delete cur[machine];
+  setShared(OPEN_KEY, cur);
+}
+
 function openDialog(machine) {
+  markOpen(machine, true);
   return openOverlay({ mod: "machine-login", kind: "dialog", width: 460, height: 190, modal: true, props: { machine } });
 }
 
@@ -28,18 +59,27 @@ export default class MachineLogin extends View {
       this.asked = new Set();
       this.tick(cx);
       cx.timer.every(5000, (cx) => this.tick(cx));
-    } else if (this.mode === "dialog" && !p.machine) {
+    } else if (this.mode === "dialog" && !p.machine && !storybook("machine-login")) {
       cx.spawn(async (cx) => { this.machine = (await needLogin())[0] ?? null; this.loaded = true; cx.notify(); });
     }
   }
 
   tick(cx) {
+    if (storybook("machine-login")) return; // mock: no hc, no dialogs
     cx.spawn(async () => {
       let now;
       try { now = new Set(await needLogin()); } catch { return; }
       for (const m of this.asked) if (!now.has(m)) this.asked.delete(m); // logged in (or gone): ask again next time
-      for (const m of now) if (!this.asked.has(m)) { this.asked.add(m); openDialog(m); }
+      for (const m of now) if (!this.asked.has(m) && !isOpen(m)) { this.asked.add(m); openDialog(m); }
     });
+  }
+
+  async close(_cx) {
+    if (storybook("machine-login")) return;
+    const p = props() ?? {};
+    if (!p.machine) return;
+    // dialog closing after "ログイン" hands over to the bar (it stays marked); otherwise clear
+    if (this.mode === "bar" || (this.mode === "dialog" && !this.handedOver)) markOpen(p.machine, false);
   }
 
   login(machine, cx) {
@@ -59,12 +99,43 @@ export default class MachineLogin extends View {
             { type: "block", content: { terminal: address } },
           ] },
         });
+        this.handedOver = true;
+        markOpen(machine, true);
         closeOverlay(me);
       } catch (e) { this.error = String(e.message ?? e); this.busy = false; cx.notify(); }
     });
   }
 
+  renderMock(sb, cx) {
+    const t = theme();
+    const d = (k, v) => sb[k] ?? v;
+    const machine = MOCK.machine[d("machine", "one")];
+    const loading = d("machine", "one") === "loading";
+    const click = (what) => (_e, cx) => { this.mockNote = `(mock) ${what}`; cx.notify(); };
+    if (d("view", "dialog") === "bar") {
+      return h_flex().size_full().px(12).gap(8).items_center().bg(t.surface).border_b(1).border_color(t.border).text_size(12)
+        .child(div().flex_1().truncate().font_semibold().text_color(t.foreground).child(`${machine ?? "my-server"}: type the password below`))
+        .child(div().id("close").px(8).py(2).rounded(5).text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .on_click(click("close")).child("✕"));
+    }
+    const btn = (id, label, primary, fn) => div().id(id).px(14).h(32).flex().items_center().rounded(7)
+      .when(primary, (el) => el.bg(t.solid).text_color(t.solid_foreground).font_semibold())
+      .when(!primary, (el) => el.text_color(t.muted).hover((s) => s.bg(t.hover)))
+      .on_click(fn).child(label);
+    return v_flex().size_full().p(20).gap(12).bg(t.popover).text_size(13)
+      .child(div().text_size(15).font_semibold().text_color(t.foreground).child(machine ? `${machine} に再ログインが必要です` : loading ? "…" : "ログインが必要なマシンはありません"))
+      .child(div().text_color(t.muted).child(machine ? "「ログイン」を押すと小さな端末が開きます。そこにパスワード(またはコード)を入力してください。" : "接続は正常です。"))
+      .when(Boolean(d("error", false)), (el) => el.child(div().text_color(t.blocked).text_size(12).child(MOCK.error)))
+      .when(Boolean(this.mockNote), (el) => el.child(div().text_color(t.dim).text_size(11).child(this.mockNote)))
+      .child(div().flex_1())
+      .child(h_flex().gap(8).justify_end()
+        .child(btn("later", "あとで", false, click("あとで")))
+        .when(Boolean(machine), (el) => el.child(btn("go", d("busy", false) ? "…" : "ログイン", true, click("ログイン")))));
+  }
+
   render(cx) {
+    const sb = storybook("machine-login");
+    if (sb) return this.renderMock({ ...DEFAULTS, ...sb }, cx);
     const t = theme();
     const p = props() ?? {};
     if (this.mode === "watcher") return div();
